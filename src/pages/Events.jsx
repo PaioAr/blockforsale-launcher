@@ -13,6 +13,9 @@ const EVENTS = [
     status: 'open',
     date: 'Jueves 3 Ene',
     color: '#e8192c',
+    version: '1.21.11',
+    fabricVersion: '0.18.6',
+    zipUrl: 'https://www.dropbox.com/scl/fi/pqd5b1gjl1y5aipoup3dp/UpSide.zip?rlkey=q7mrsaf83p6hrxluadcihy9nx&st=lz3awsrc&dl=1',
   }
 ]
 
@@ -34,10 +37,11 @@ export default function Events() {
   const profile = loadProfile()
   const [selected, setSelected] = useState(EVENTS[0])
   const [tab, setTab] = useState('Jugar')
-  const [downloading, setDownloading] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [done, setDone] = useState(false)
   const [videoSrc, setVideoSrc] = useState('')
+  const [launchStatus, setLaunchStatus] = useState('idle')
+  const [launchLog, setLaunchLog] = useState('')
+  const [javaFound, setJavaFound] = useState(null)
+  const [progressData, setProgressData] = useState({ pct: 0, file: '' })
 
   const settingsData = JSON.parse(localStorage.getItem('bfs_settings') || '{}')
   const animationsEnabled = settingsData.animationsEnabled !== false
@@ -53,30 +57,70 @@ export default function Events() {
         setVideoSrc(fullPath)
       })
     }
+
+    ipcRenderer.invoke('check-java').then(result => {
+      setJavaFound(result.found)
+    })
+
+    const onProgress = (_, data) => {
+      setLaunchStatus('downloading')
+      setProgressData({
+        pct: data.pct || 0,
+        file: data.file || ''
+      })
+    }
+
+    const onLog = (_, msg) => {
+      setLaunchLog(msg)
+    }
+
+    const onClosed = () => {
+      setLaunchStatus('idle')
+      setProgressData({ pct: 0, file: '' })
+      setLaunchLog('')
+      ipcRenderer.invoke('check-java').then(result => setJavaFound(result.found))
+    }
+
+    ipcRenderer.on('launch-progress', onProgress)
+    ipcRenderer.on('launch-log', onLog)
+    ipcRenderer.on('launch-closed', onClosed)
+
+    return () => {
+      ipcRenderer.removeListener('launch-progress', onProgress)
+      ipcRenderer.removeListener('launch-log', onLog)
+      ipcRenderer.removeListener('launch-closed', onClosed)
+    }
   }, [])
 
   useEffect(() => {
-    setDownloading(false)
-    setProgress(0)
-    setDone(false)
+    if (launchStatus !== 'running') {
+      setLaunchStatus('idle')
+      setProgressData({ pct: 0, file: '' })
+      setLaunchLog('')
+    }
   }, [selected])
 
-  function handlePlay() {
-    if (done) return
-    setDownloading(true)
-    setProgress(0)
-    let p = 0
-    const interval = setInterval(() => {
-      p += Math.random() * 8 + 2
-      if (p >= 100) {
-        p = 100
-        setProgress(100)
-        setDone(true)
-        clearInterval(interval)
-      } else {
-        setProgress(Math.round(p))
-      }
-    }, 120)
+  async function handlePlay() {
+    if (['running', 'downloading', 'checking'].includes(launchStatus)) return
+
+    setLaunchStatus('checking')
+    setLaunchLog('Preparando inicio...')
+    setProgressData({ pct: 0, file: '' })
+
+    const settings = JSON.parse(localStorage.getItem('bfs_settings') || '{}')
+
+    const result = await ipcRenderer.invoke('launch-minecraft', {
+      profile,
+      settings,
+      event: selected
+    })
+
+    if (result.success) {
+      setLaunchStatus('running')
+    } else {
+      setLaunchStatus('error')
+      setLaunchLog(result.error || 'Error crítico al lanzar')
+    }
   }
 
   function handleLogout() {
@@ -87,8 +131,8 @@ export default function Events() {
   return (
     <div className="w-screen h-screen flex select-none overflow-hidden" style={{ fontFamily: 'Inter, sans-serif', background: '#111' }}>
 
+      {/* SIDEBAR */}
       <div className="flex flex-col flex-shrink-0" style={{ width: '190px', background: '#0e0e0e', borderRight: '1px solid #222' }}>
-
         <div className="px-4 py-4" style={{ borderBottom: '1px solid #222' }}>
           <div className="text-white font-black text-sm leading-tight">BLOCKFORSALE</div>
           <div className="font-black text-sm leading-tight" style={{ color: '#e8192c' }}>CLIENT</div>
@@ -150,8 +194,10 @@ export default function Events() {
         </div>
       </div>
 
+      {/* ÁREA PRINCIPAL */}
       <div className="flex-1 flex flex-col overflow-hidden">
 
+        {/* Tabs */}
         <div className="flex items-center justify-between px-5 flex-shrink-0"
           style={{ background: 'rgba(0,0,0,0.6)', borderBottom: '1px solid #222', backdropFilter: 'blur(10px)', WebkitAppRegion: 'drag' }}>
           <div className="flex" style={{ WebkitAppRegion: 'no-drag' }}>
@@ -164,39 +210,31 @@ export default function Events() {
             ))}
           </div>
           <div className="flex gap-2" style={{ WebkitAppRegion: 'no-drag' }}>
-            <div className="w-3 h-3 rounded-full cursor-pointer" style={{ background: '#e94545' }} />
-            <div className="w-3 h-3 rounded-full cursor-pointer" style={{ background: '#e9a045' }} />
-            <div className="w-3 h-3 rounded-full cursor-pointer" style={{ background: '#45c245' }} />
+            <div onClick={() => ipcRenderer.send('window-minimize')} className="w-3 h-3 rounded-full cursor-pointer hover:opacity-70" style={{ background: '#e9a045' }} />
+            <div onClick={() => ipcRenderer.send('window-close')} className="w-3 h-3 rounded-full cursor-pointer hover:opacity-70" style={{ background: '#e94545' }} />
           </div>
         </div>
 
+        {/* Contenido */}
         {tab === 'Jugar' && (
           <div className="flex-1 flex flex-col overflow-hidden relative">
 
-            {/* Video de fondo — solo si animaciones activas */}
             {videoSrc && animationsEnabled && (
-              <video
-                key={videoSrc}
-                autoPlay
-                loop
-                muted
-                playsInline
+              <video key={videoSrc} autoPlay loop muted playsInline
                 className="absolute inset-0 w-full h-full"
-                style={{ objectFit: 'cover', opacity: 0.5 }}
-              >
+                style={{ objectFit: 'cover', opacity: 0.5 }}>
                 <source src={videoSrc} type="video/mp4" />
               </video>
             )}
 
             <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.55)' }} />
-
             <div className="absolute inset-0"
               style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.97) 0%, rgba(0,0,0,0.1) 60%, rgba(0,0,0,0.4) 100%)' }} />
-
             <div className="absolute inset-0"
               style={{ background: 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%)' }} />
 
             <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-8 text-center">
+
               <div className="inline-block px-4 py-1.5 rounded-full text-xs font-semibold mb-5 tracking-wider"
                 style={{ background: selected.color + '22', color: selected.color, border: `1px solid ${selected.color}44` }}>
                 {selected.status === 'open' ? `● ABIERTO — ${selected.date}` : `⏳ PRÓXIMO — ${selected.date}`}
@@ -207,57 +245,99 @@ export default function Events() {
                 {selected.name}
               </h1>
 
-              <p className="text-base mb-10 max-w-lg leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              <p className="text-base mb-8 max-w-lg leading-relaxed" style={{ color: 'rgba(255,255,255,0.45)' }}>
                 {selected.description}
               </p>
 
+              {javaFound === false && launchStatus === 'idle' && (
+                <div className="mb-4 px-4 py-2 rounded-lg text-xs text-center"
+                  style={{ background: '#1a0a00', border: '1px solid #e8a02044', color: '#e8a020' }}>
+                  ⚠ Java 21 no detectado — se instalará automáticamente al presionar Jugar
+                </div>
+              )}
+
               <button
                 onClick={handlePlay}
-                disabled={selected.status !== 'open' || (downloading && !done)}
+                disabled={selected.status !== 'open' || ['downloading', 'checking', 'running'].includes(launchStatus)}
                 className="font-black py-4 px-16 rounded-xl text-base tracking-widest transition-all active:scale-95"
                 style={{
                   background: selected.status !== 'open'
                     ? '#2a2a2a'
-                    : done
-                    ? selected.color
-                    : downloading
-                    ? '#1a1a1a'
+                    : launchStatus === 'error'
+                    ? '#3a0a0a'
+                    : launchStatus === 'running'
+                    ? '#1a3a1a'
                     : selected.color,
                   color: selected.status !== 'open' ? '#444' : '#fff',
                   border: 'none',
-                  cursor: selected.status !== 'open' || (downloading && !done) ? 'not-allowed' : 'pointer',
-                  boxShadow: selected.status === 'open' && !downloading ? `0 6px 32px ${selected.color}55` : 'none',
-                  minWidth: '200px',
+                  cursor: selected.status !== 'open' || ['downloading', 'checking', 'running'].includes(launchStatus)
+                    ? 'not-allowed' : 'pointer',
+                  boxShadow: selected.status === 'open' && launchStatus === 'idle'
+                    ? `0 6px 32px ${selected.color}55` : 'none',
+                  minWidth: '220px',
                 }}
               >
-                {selected.status !== 'open'
-                  ? 'PRÓXIMAMENTE'
-                  : done
-                  ? '▶ JUGAR'
-                  : downloading
-                  ? `DESCARGANDO ${progress}%`
+                {selected.status !== 'open' ? 'PRÓXIMAMENTE'
+                  : launchStatus === 'checking' ? 'VERIFICANDO...'
+                  : launchStatus === 'downloading' ? 'INSTALANDO...'
+                  : launchStatus === 'running' ? '▶ EN JUEGO'
+                  : launchStatus === 'error' ? 'ERROR — REINTENTAR'
                   : 'JUGAR'}
               </button>
 
+              {/* Barra de progreso con archivo actual */}
               <div
-                className="mt-6 transition-all duration-300 overflow-hidden"
-                style={{ width: '280px', maxHeight: downloading ? '40px' : '0px', opacity: downloading ? 1 : 0 }}
+                className="mt-6 transition-all duration-300"
+                style={{
+                  width: '360px',
+                  opacity: launchStatus !== 'idle' ? 1 : 0,
+                  visibility: launchStatus !== 'idle' ? 'visible' : 'hidden'
+                }}
               >
+                {/* Barra principal */}
                 <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
                   <div
-                    className="h-full rounded-full transition-all duration-150"
-                    style={{ width: `${progress}%`, background: selected.color }}
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: launchStatus === 'running' ? '100%' : `${progressData.pct}%`,
+                      background: launchStatus === 'error'
+                        ? '#e8192c'
+                        : launchStatus === 'running'
+                        ? '#4ade80'
+                        : selected.color
+                    }}
                   />
                 </div>
-                <div className="flex justify-between mt-2">
-                  <span className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                    {done ? 'Instalación completa' : 'Descargando mods...'}
+
+                {/* Info debajo de la barra */}
+                <div className="flex justify-between items-start mt-2 gap-2">
+                  <div className="flex flex-col items-start min-w-0">
+                    {/* Log principal (paso actual) */}
+                    <span className="text-[10px] uppercase tracking-wider font-medium"
+                      style={{ color: launchStatus === 'error' ? '#e8192c' : 'rgba(255,255,255,0.5)' }}>
+                      {launchStatus === 'error' ? launchLog
+                        : launchStatus === 'running' ? 'Minecraft corriendo'
+                        : launchStatus === 'checking' ? 'Verificando...'
+                        : launchLog || 'Preparando...'}
+                    </span>
+                    {/* Archivo actual (si hay) */}
+                    {progressData.file && launchStatus === 'downloading' && (
+                      <span className="text-[10px] truncate max-w-[260px] mt-0.5"
+                        style={{ color: 'rgba(255,255,255,0.2)' }}>
+                        ↓ {progressData.file}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xs font-bold flex-shrink-0"
+                    style={{ color: launchStatus === 'running' ? '#4ade80' : selected.color }}>
+                    {launchStatus === 'running' ? 'LISTO'
+                      : launchStatus === 'checking' ? '...'
+                      : `${progressData.pct}%`}
                   </span>
-                  <span className="text-xs font-medium" style={{ color: selected.color }}>{progress}%</span>
                 </div>
               </div>
-            </div>
 
+            </div>
           </div>
         )}
 
@@ -273,11 +353,13 @@ export default function Events() {
 
         {tab === 'Notas de actualización' && (
           <div className="flex-1 overflow-y-auto p-8" style={{ background: '#111' }}>
-            <h2 className="text-white font-bold text-xl mb-6">{selected.name}</h2>
+            <h2 className="text-white font-bold text-xl mb-6">Actualizaciones — {selected.name}</h2>
             <div className="space-y-4">
               {[
-                'Instancia inicial del evento configurada y lista para descargar.',
-                'Actualizaciones automáticas al abrir el launcher.',
+                'Instalación automática de Java 21 portable.',
+                'Descarga e instalación de Minecraft y Fabric automática.',
+                'Sincronización de mods desde el servidor.',
+                'Sistema de login con Microsoft integrado.',
               ].map((note, i) => (
                 <div key={i} className="flex items-start gap-3">
                   <div className="w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0" style={{ background: selected.color }} />

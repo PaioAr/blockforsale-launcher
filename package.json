@@ -9,6 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@xmcl/core": "^2.15.1",
+    "@xmcl/installer": "^6.1.2",
+    "@xmcl/java-installer": "^0.1.4",
+    "@xmcl/task": "^4.1.1",
+    "adm-zip": "^0.5.17",
+    "axios": "^1.14.0",
+    "extract-zip": "^2.0.1",
     "msmc": "^5.0.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
